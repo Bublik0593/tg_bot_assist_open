@@ -4,7 +4,7 @@ Python 3.11+, aiogram 3, SQLite (WAL), APScheduler.
 
 ## Запуск
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 cp .env.example .env      # впишите BOT_TOKEN от @BotFather
 .venv/bin/python main.py
 .venv/bin/python -m pytest
@@ -17,7 +17,19 @@ cp .env.example .env      # впишите BOT_TOKEN от @BotFather
 - **Настройки:** часовой пояс (по умолчанию Europe/Moscow).
 - Данные каждого пользователя изолированы (`user_id` во всех запросах).
 
-## VPS
+## Docker (рекомендуется для VPS)
+```bash
+cp .env.example .env          # впишите BOT_TOKEN
+mkdir -p data && sudo chown 10001 data   # база хранится в ./data (volume)
+docker compose up -d --build
+docker compose logs -f bot
+```
+- Обновление: `git pull && docker compose up -d --build`
+- Бэкап: `docker compose run --rm backup` (14 копий в `data/backups`); для ежедневного запуска добавьте в cron
+  `0 4 * * * cd /path/to/bot_habits && docker compose run --rm backup`
+- Данные лежат в `./data`, при пересборке образа не теряются.
+
+## VPS без Docker (systemd)
 1. Скопировать проект в `/opt/bot_habits`, создать venv, `.env` (права `600`), пользователя `botuser`.
 2. `sudo cp deploy/habits-bot.service /etc/systemd/system/ && sudo systemctl enable --now habits-bot`
 3. Логи: `journalctl -u habits-bot -f`

@@ -1,0 +1,24 @@
+services:
+  bot:
+    build: .
+    container_name: habits-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_PATH: /data/bot.sqlite
+    volumes:
+      - ./data:/data
+
+  # Ежедневный бэкап SQLite: docker compose run --rm backup (или по cron)
+  backup:
+    image: keinos/sqlite3:latest
+    profiles: ["tools"]
+    user: root
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        mkdir -p /data/backups &&
+        sqlite3 /data/bot.sqlite ".backup '/data/backups/bot-$$(date +%F).sqlite'" &&
+        ls -1t /data/backups/bot-*.sqlite | tail -n +15 | xargs -r rm --
+    volumes:
+      - ./data:/data
