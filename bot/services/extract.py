@@ -42,29 +42,102 @@ def _reflow_pdf(page: str) -> str:
     return re.sub(r"(?<![.!?…:;»\"\n])\n(?!\n)", " ", page)
 
 
-def _pdf_text(data: bytes) -> str:
+def garbled_ratio(text: str) -> float:
+    """Доля «мусорных» символов: Latin-1 Supplement, U+FFFD, private use, (cid:N)."""
+    text = re.sub(r"\(cid:\d+\)", "\ufffd", text)
+    letters = bad = 0
+    for ch in text:
+        o = ord(ch)
+        if 0x80 <= o <= 0xFF or o == 0xFFFD or 0xE000 <= o <= 0xF8FF:
+            bad += 1
+        elif ch.isalpha():
+            letters += 1
+    total = letters + bad
+    return bad / total if total else 0.0
+
+
+def _is_garbled(text: str) -> bool:
+    return garbled_ratio(text) > 0.3
+
+
+def _cyr(text: str) -> int:
+    return sum("\u0400" <= ch <= "\u04ff" for ch in text)
+
+
+def fix_mojibake(text: str) -> str | None:
+    """Кириллица CP1251, прочитанная как Latin-1/CP1252 («Ïðèâåò»). None, если починить не вышло."""
+    for enc in ("latin-1", "cp1252"):
+        try:
+            fixed = text.encode(enc).decode("cp1251")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+        if _cyr(fixed) > len(fixed) * 0.3 and not _is_garbled(fixed):
+            return fixed
+    return None
+
+
+def _pypdf_pages(data: bytes) -> str:
     from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(data))
+    if reader.is_encrypted and not reader.decrypt(""):
+        raise ExtractError("PDF защищён паролем.")
+    parts: list[str] = []
+    total = 0
+    for page in reader.pages:
+        t = page.extract_text() or ""
+        total += len(t)
+        if total > MAX_CHARS:
+            raise ExtractError("Слишком много текста в файле.")
+        parts.append(t)
+    return "\n\n".join(parts)
+
+
+def _pdfminer_pages(data: bytes) -> str:
+    from pdfminer.high_level import extract_text as pm_extract
+
+    return pm_extract(io.BytesIO(data))[:MAX_CHARS]
+
+
+def _pdf_text(data: bytes) -> str:
     from pypdf.errors import PdfReadError
 
     try:
-        reader = PdfReader(io.BytesIO(data))
-        if reader.is_encrypted and not reader.decrypt(""):
-            raise ExtractError("PDF защищён паролем.")
-        parts: list[str] = []
-        total = 0
-        for page in reader.pages:
-            t = _reflow_pdf(page.extract_text() or "")
-            total += len(t)
-            if total > MAX_CHARS:
-                raise ExtractError("Слишком много текста в файле.")
-            parts.append(t)
+        text = _pypdf_pages(data)
     except ExtractError:
         raise
     except (PdfReadError, ValueError, KeyError, OSError, RecursionError) as e:
-        raise ExtractError("Не удалось прочитать PDF — файл повреждён.") from e
-    text = "\n\n".join(parts)
+        text = ""
+        pypdf_error = e
+    else:
+        pypdf_error = None
+
+    if text.strip() and _is_garbled(text):
+        # 1) типичная «кракозябра» CP1251 -> 2) другой разборщик (pdfminer читает больше кодировок шрифтов)
+        text = fix_mojibake(text) or _try_pdfminer(data) or text
+        if _is_garbled(text):
+            raise ExtractError(
+                "Не удалось корректно извлечь текст из PDF: в файле нестандартная кодировка шрифтов. "
+                "Откройте его в читалке и сохраните/экспортируйте как .txt или .docx, либо пришлите другой экземпляр."
+            )
+    elif not text.strip():
+        text = _try_pdfminer(data) or ""
+        if not text.strip():
+            if pypdf_error:
+                raise ExtractError("Не удалось прочитать PDF — файл повреждён.") from pypdf_error
+            raise ExtractError("В PDF нет текстового слоя (похоже, это скан). Нужен PDF с выделяемым текстом.")
+    return _reflow_pdf(text)
+
+
+def _try_pdfminer(data: bytes) -> str | None:
+    try:
+        text = _pdfminer_pages(data)
+    except Exception:  # pdfminer кидает много разных исключений на битых файлах
+        return None
     if not text.strip():
-        raise ExtractError("В PDF нет текстового слоя (похоже, это скан). Нужен PDF с выделяемым текстом.")
+        return None
+    if _is_garbled(text):
+        return fix_mojibake(text)
     return text
 
 

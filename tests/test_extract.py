@@ -71,3 +71,38 @@ def test_corrupt_files(name):
 def test_unsupported():
     with pytest.raises(ExtractError):
         extract_text("a.doc", b"x")
+
+
+def test_fix_mojibake_cp1251_read_as_latin1():
+    from bot.services.extract import fix_mojibake, garbled_ratio
+
+    original = "Привет, мир! Это обычный русский текст книги."
+    broken = original.encode("cp1251").decode("latin-1")
+    assert garbled_ratio(broken) > 0.3
+    assert fix_mojibake(broken) == original
+
+
+def test_clean_text_not_flagged():
+    from bot.services.extract import garbled_ratio
+
+    assert garbled_ratio("Нормальный русский text и немного English.") == 0
+    assert garbled_ratio("Café résumé naïve — вполне допустимо") < 0.3
+    assert garbled_ratio("(cid:12)(cid:45)(cid:7)") == 1.0
+
+
+def test_pdf_with_cp1251_mojibake_is_repaired(monkeypatch):
+    from bot.services import extract
+
+    original = "Это длинная книга для проверки кодировки. " * 5
+    broken = original.encode("cp1251").decode("latin-1")
+    monkeypatch.setattr(extract, "_pypdf_pages", lambda data: broken)
+    assert extract.extract_text("a.pdf", b"x").startswith("Это длинная книга")
+
+
+def test_pdf_unrecoverable_garbage_gives_message(monkeypatch):
+    from bot.services import extract
+
+    monkeypatch.setattr(extract, "_pypdf_pages", lambda data: "(cid:1)(cid:2)" * 50)
+    monkeypatch.setattr(extract, "_pdfminer_pages", lambda data: "(cid:1)(cid:2)" * 50)
+    with pytest.raises(ExtractError, match="нестандартная кодировка"):
+        extract.extract_text("a.pdf", b"x")
