@@ -9,7 +9,8 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton as B, InlineKeyboa
 from ..config import Config
 from ..db import repo
 from ..keyboards import BTN_BOOKS
-from ..services.pagination import decode_text, normalize, paginate
+from ..services.extract import SUPPORTED, ExtractError, extract_text
+from ..services.pagination import paginate
 from ..states import BookJump
 from ..utils import short, show
 
@@ -19,12 +20,12 @@ router = Router()
 async def render_list(target, db, user_id: int):
     books = await repo.list_books(db, user_id)
     if not books:
-        return await show(target, "📚 <b>Книги</b>\nПока нет ни одной. Отправьте мне файл в формате <b>.txt</b>.")
+        return await show(target, "📚 <b>Книги</b>\nПока нет ни одной. Отправьте мне файл в формате <b>.txt</b>, <b>.docx</b> или <b>.pdf</b>.")
     rows = [
         [B(text=f"📖 {short(b['title'], 32)} · {b['current_page']}/{b['total_pages']}", callback_data=f"bk:o:{b['id']}")]
         for b in books
     ]
-    await show(target, "📚 <b>Книги</b>\nВыберите книгу или отправьте новый .txt файл.", InlineKeyboardMarkup(inline_keyboard=rows))
+    await show(target, "📚 <b>Книги</b>\nВыберите книгу или отправьте новый файл (.txt, .docx, .pdf).", InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @router.message(F.text == BTN_BOOKS)
@@ -42,14 +43,17 @@ async def back(call: CallbackQuery, db):
 async def upload(message: Message, bot: Bot, db, cfg: Config):
     doc = message.document
     name = doc.file_name or "book.txt"
-    if not name.lower().endswith(".txt"):
-        return await message.answer("Поддерживается только формат .txt")
+    if not name.lower().endswith(SUPPORTED):
+        return await message.answer("Поддерживаются форматы .txt, .docx и .pdf")
     if doc.file_size and doc.file_size > cfg.max_book_bytes:
         return await message.answer(f"Файл слишком большой (максимум {cfg.max_book_bytes // 1024 // 1024} МБ).")
     wait = await message.answer("Загружаю и разбиваю на страницы…")
     buf = io.BytesIO()
     await bot.download(doc, destination=buf)
-    pages = await asyncio.to_thread(lambda: paginate(decode_text(buf.getvalue()), cfg.page_size))
+    try:
+        pages = await asyncio.to_thread(lambda: paginate(extract_text(name, buf.getvalue()), cfg.page_size))
+    except ExtractError as e:
+        return await wait.edit_text(str(e))
     if not pages:
         return await wait.edit_text("Файл пустой, добавлять нечего.")
     title = os.path.splitext(name)[0][:100]

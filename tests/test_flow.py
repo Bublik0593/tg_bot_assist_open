@@ -163,10 +163,13 @@ async def test_habit_edit(h):
 
 async def test_book_upload_read_progress(h):
     db = h.dp["db"]
-    await h.send_file("notes.pdf")
-    assert "только формат .txt" in h.last_text()
+    await h.send_file("notes.doc")
+    assert "Поддерживаются форматы" in h.last_text()
     await h.send_file("big.txt", size=50 * 1024 * 1024)
     assert "слишком большой" in h.last_text()
+    await h.send_file("битый.docx")  # BOOK — не zip
+    assert "Не удалось открыть .docx" in h.last_text()
+    assert await repo.list_books(db, 1) == []
     await h.send_file("Война и мир.txt")
     book = (await repo.list_books(db, 1))[0]
     assert book["title"] == "Война и мир" and book["total_pages"] > 5
