@@ -123,6 +123,44 @@ async def test_habit_flow_and_marking(h):
     assert h.sched.sched.get_job(f"habit:{hab['id']}") is None
 
 
+async def test_goal_edit(h):
+    db = h.dp["db"]
+    await h.say("/start")
+    await repo.add_goal(db, 1, "Старое", "")
+    gid = (await repo.list_goals(db, 1, "all"))[0]["id"]
+    await h.click(f"g:e:{gid}")
+    await h.say("Новое")
+    await h.click(f"g:ed:{gid}")
+    await h.say("Подробности")
+    g = await repo.get_goal(db, 1, gid)
+    assert (g["title"], g["description"]) == ("Новое", "Подробности")
+    await h.click(f"g:ed:{gid}")
+    await h.say("-")
+    assert (await repo.get_goal(db, 1, gid))["description"] == ""
+
+
+async def test_habit_edit(h):
+    db = h.dp["db"]
+    await h.say("/start")
+    hid = await repo.add_habit(db, 1, "Зарядка", "0,1,2,3,4", "07:30", "2026-01-01")
+    await h.sched.sync_habit(hid)
+    await h.click(f"h:en:{hid}")
+    await h.say("Йога")
+    await h.click(f"h:et:{hid}")
+    await h.say("99:99")
+    assert "Не понял" in h.last_text()
+    await h.say("8:05")
+    await h.click(f"h:ed:{hid}")
+    await h.click("he:all")
+    await h.click("he:ok")
+    hab = await repo.get_habit(db, 1, hid)
+    assert (hab["name"], hab["time"], hab["weekdays"]) == ("Йога", "08:05", "0,1,2,3,4,5,6")
+    assert h.sched.sched.get_job(f"habit:{hid}")
+    # чужой пользователь не может менять
+    await repo.update_habit(db, 2, hid, name="Взлом")
+    assert (await repo.get_habit(db, 1, hid))["name"] == "Йога"
+
+
 async def test_book_upload_read_progress(h):
     db = h.dp["db"]
     await h.send_file("notes.pdf")

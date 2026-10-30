@@ -14,6 +14,13 @@ class GoalAdd(StatesGroup):
 
 class GoalEdit(StatesGroup):
     title = State()
+    description = State()
+
+
+class HabitEdit(StatesGroup):
+    name = State()
+    days = State()
+    time = State()
 
 
 class TzManual(StatesGroup):

@@ -11,7 +11,7 @@ from ..db import repo
 from ..keyboards import BTN_HABITS
 from ..services.scheduler import HabitScheduler
 from ..services.stats import WEEKDAYS_SHORT, build_table, parse_weekdays
-from ..states import HabitAdd
+from ..states import HabitAdd, HabitEdit
 from ..utils import short, show
 
 router = Router()
@@ -57,6 +57,7 @@ async def render_habit(call: CallbackQuery, db, habit_id: int):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [B(text="▶️ Возобновить" if not h["is_active"] else "⏸ Пауза", callback_data=f"h:p:{habit_id}"),
          B(text="🗑 Удалить", callback_data=f"h:d:{habit_id}")],
+        [B(text="✏️ Изменить", callback_data=f"h:e:{habit_id}")],
         [B(text="⬅️ К списку", callback_data="h:l")],
     ])
     await show(call, text, kb)
@@ -143,12 +144,12 @@ async def add_name(message: Message, state: FSMContext):
     await message.answer("В какие дни напоминать?", reply_markup=days_keyboard(set()))
 
 
-def days_keyboard(selected: set[int]) -> InlineKeyboardMarkup:
-    row = [B(text=("✓ " if i in selected else "") + WEEKDAYS_SHORT[i], callback_data=f"hd:{i}") for i in range(7)]
+def days_keyboard(selected: set[int], prefix: str = "hd") -> InlineKeyboardMarkup:
+    row = [B(text=("✓ " if i in selected else "") + WEEKDAYS_SHORT[i], callback_data=f"{prefix}:{i}") for i in range(7)]
     return InlineKeyboardMarkup(inline_keyboard=[
         row[:4], row[4:],
-        [B(text="Каждый день", callback_data="hd:all"), B(text="Будни", callback_data="hd:wd")],
-        [B(text="Готово ➡️", callback_data="hd:ok")],
+        [B(text="Каждый день", callback_data=f"{prefix}:all"), B(text="Будни", callback_data=f"{prefix}:wd")],
+        [B(text="Готово ➡️", callback_data=f"{prefix}:ok")],
     ])
 
 
@@ -185,4 +186,98 @@ async def add_time(message: Message, state: FSMContext, db, scheduler: HabitSche
     await message.answer(
         f"Привычка добавлена: <b>{html.escape(data['name'])}</b>, {days_label(','.join(map(str, data['days'])))} в {time} ({tz})"
     )
+    await render_list(message, db, message.from_user.id)
+
+
+# --- редактирование ---
+@router.callback_query(F.data.regexp(r"^h:e:\d+$"))
+async def edit_menu(call: CallbackQuery, db):
+    hid = int(call.data.split(":")[2])
+    if not await repo.get_habit(db, call.from_user.id, hid):
+        return await render_list(call, db, call.from_user.id)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [B(text="Название", callback_data=f"h:en:{hid}"), B(text="Дни", callback_data=f"h:ed:{hid}"),
+         B(text="Время", callback_data=f"h:et:{hid}")],
+        [B(text="⬅️ Назад", callback_data=f"h:v:{hid}")],
+    ])
+    await show(call, "Что изменить?", kb)
+
+
+@router.callback_query(F.data.regexp(r"^h:en:\d+$"))
+async def edit_name_start(call: CallbackQuery, db, state: FSMContext):
+    hid = int(call.data.split(":")[2])
+    if not await repo.get_habit(db, call.from_user.id, hid):
+        return await render_list(call, db, call.from_user.id)
+    await state.set_state(HabitEdit.name)
+    await state.update_data(habit_id=hid)
+    await show(call, "Новое название привычки? (/cancel — отмена)")
+
+
+@router.message(HabitEdit.name, F.text)
+async def edit_name(message: Message, state: FSMContext, db):
+    name = message.text.strip()
+    if not name or len(name) > 100:
+        return await message.answer("Название должно быть от 1 до 100 символов.")
+    hid = (await state.get_data())["habit_id"]
+    await repo.update_habit(db, message.from_user.id, hid, name=name)
+    await state.clear()
+    await message.answer("Название изменено ✅")
+    await render_list(message, db, message.from_user.id)
+
+
+@router.callback_query(F.data.regexp(r"^h:ed:\d+$"))
+async def edit_days_start(call: CallbackQuery, db, state: FSMContext):
+    hid = int(call.data.split(":")[2])
+    h = await repo.get_habit(db, call.from_user.id, hid)
+    if not h:
+        return await render_list(call, db, call.from_user.id)
+    sel = parse_weekdays(h["weekdays"])
+    await state.set_state(HabitEdit.days)
+    await state.update_data(habit_id=hid, days=sorted(sel))
+    await show(call, "В какие дни напоминать?", days_keyboard(set(sel), "he"))
+
+
+@router.callback_query(HabitEdit.days, F.data.regexp(r"^he:(\d|all|wd|ok)$"))
+async def edit_days_pick(call: CallbackQuery, state: FSMContext, db, scheduler: HabitScheduler):
+    key = call.data.split(":")[1]
+    data = await state.get_data()
+    sel = set(data["days"])
+    if key == "ok":
+        if not sel:
+            return await call.answer("Выберите хотя бы один день", show_alert=True)
+        hid = data["habit_id"]
+        await repo.update_habit(db, call.from_user.id, hid, weekdays=",".join(map(str, sorted(sel))))
+        await scheduler.sync_habit(hid)
+        await state.clear()
+        return await render_habit(call, db, hid)
+    if key == "all":
+        sel = set(range(7))
+    elif key == "wd":
+        sel = set(range(5))
+    else:
+        sel ^= {int(key)}
+    await state.update_data(days=sorted(sel))
+    await show(call, "В какие дни напоминать?", days_keyboard(sel, "he"))
+
+
+@router.callback_query(F.data.regexp(r"^h:et:\d+$"))
+async def edit_time_start(call: CallbackQuery, db, state: FSMContext):
+    hid = int(call.data.split(":")[2])
+    if not await repo.get_habit(db, call.from_user.id, hid):
+        return await render_list(call, db, call.from_user.id)
+    await state.set_state(HabitEdit.time)
+    await state.update_data(habit_id=hid)
+    await show(call, "Новое время? Формат ЧЧ:ММ, например 07:30 (/cancel — отмена)")
+
+
+@router.message(HabitEdit.time, F.text)
+async def edit_time(message: Message, state: FSMContext, db, scheduler: HabitScheduler):
+    m = TIME_RE.match(message.text.strip())
+    if not m:
+        return await message.answer("Не понял время. Формат ЧЧ:ММ, например 07:30.")
+    hid = (await state.get_data())["habit_id"]
+    await repo.update_habit(db, message.from_user.id, hid, time=f"{int(m.group(1)):02d}:{m.group(2)}")
+    await scheduler.sync_habit(hid)
+    await state.clear()
+    await message.answer("Время изменено ✅")
     await render_list(message, db, message.from_user.id)

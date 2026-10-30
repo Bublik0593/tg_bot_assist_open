@@ -44,6 +44,10 @@ async def rename_goal(db: Database, user_id: int, goal_id: int, title: str) -> N
     await db.execute("UPDATE goals SET title = ? WHERE id = ? AND user_id = ?", (title, goal_id, user_id))
 
 
+async def set_goal_description(db: Database, user_id: int, goal_id: int, description: str) -> None:
+    await db.execute("UPDATE goals SET description = ? WHERE id = ? AND user_id = ?", (description, goal_id, user_id))
+
+
 async def delete_goal(db: Database, user_id: int, goal_id: int) -> None:
     await db.execute("DELETE FROM goals WHERE id = ? AND user_id = ?", (goal_id, user_id))
 
@@ -82,6 +86,17 @@ async def list_active_habits_with_tz(db: Database, user_id: int | None = None):
 
 async def toggle_habit_active(db: Database, user_id: int, habit_id: int) -> None:
     await db.execute("UPDATE habits SET is_active = 1 - is_active WHERE id = ? AND user_id = ?", (habit_id, user_id))
+
+
+async def update_habit(db: Database, user_id: int, habit_id: int, **fields) -> None:
+    """Меняет name / weekdays / time привычки."""
+    allowed = {"name", "weekdays", "time"}
+    if not fields or not set(fields) <= allowed:
+        raise ValueError(f"bad fields: {sorted(fields)}")
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    await db.execute(
+        f"UPDATE habits SET {sets} WHERE id = ? AND user_id = ?", (*fields.values(), habit_id, user_id)
+    )
 
 
 async def delete_habit(db: Database, user_id: int, habit_id: int) -> None:

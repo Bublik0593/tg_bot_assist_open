@@ -50,7 +50,8 @@ async def render_goal(call: CallbackQuery, db, goal_id: int, flt: str):
         text += f"\n\n{html.escape(g['description'])}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [B(text="↩️ Вернуть в активные" if g["is_done"] else "✅ Выполнено", callback_data=f"g:t:{goal_id}:{flt}")],
-        [B(text="✏️ Переименовать", callback_data=f"g:e:{goal_id}"), B(text="🗑 Удалить", callback_data=f"g:d:{goal_id}:{flt}")],
+        [B(text="✏️ Название", callback_data=f"g:e:{goal_id}"), B(text="📝 Описание", callback_data=f"g:ed:{goal_id}")],
+        [B(text="🗑 Удалить", callback_data=f"g:d:{goal_id}:{flt}")],
         [B(text="⬅️ К списку", callback_data=f"g:l:{flt}")],
     ])
     await show(call, text, kb)
@@ -112,7 +113,7 @@ async def add_desc(message: Message, state: FSMContext, db):
     await render_list(message, db, message.from_user.id)
 
 
-# --- переименование ---
+# --- редактирование ---
 @router.callback_query(F.data.regexp(r"^g:e:\d+$"))
 async def edit_start(call: CallbackQuery, state: FSMContext):
     await state.set_state(GoalEdit.title)
@@ -128,5 +129,22 @@ async def edit_title(message: Message, state: FSMContext, db):
     gid = (await state.get_data())["goal_id"]
     await repo.rename_goal(db, message.from_user.id, gid, title)
     await state.clear()
-    await message.answer("Переименовано ✅")
+    await message.answer("Название изменено ✅")
+    await render_list(message, db, message.from_user.id)
+
+
+@router.callback_query(F.data.regexp(r"^g:ed:\d+$"))
+async def edit_desc_start(call: CallbackQuery, state: FSMContext):
+    await state.set_state(GoalEdit.description)
+    await state.update_data(goal_id=int(call.data.split(":")[2]))
+    await show(call, "Новое описание? Отправьте «-», чтобы удалить. (/cancel — отмена)")
+
+
+@router.message(GoalEdit.description, F.text)
+async def edit_desc(message: Message, state: FSMContext, db):
+    desc = "" if message.text.strip() == "-" else message.text.strip()[:2000]
+    gid = (await state.get_data())["goal_id"]
+    await repo.set_goal_description(db, message.from_user.id, gid, desc)
+    await state.clear()
+    await message.answer("Описание изменено ✅")
     await render_list(message, db, message.from_user.id)
